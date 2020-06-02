@@ -1,66 +1,90 @@
 import asyncio
 import logging
-from typing import Awaitable, Optional, List, Union
-from asyncio import StreamReader, StreamWriter
+from typing import Awaitable, Callable, Optional, List, Union
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 HOST = "127.0.0.1"
 PORT = 4040
-NUM_TRIES = 1
+NUM_TRIES = 3
 
 mem = dict()
+lock = asyncio.Lock()
 
 
 def _log(name: str) -> str:
     """Returns a string with the input argument"""
-    return f"Currently executing {name}"
+    return f"Currently executing function '{name}'"
 
 
-async def handle_echo(reader: StreamReader, writer: StreamWriter) -> Optional[Awaitable[None]]:
+def log_name(func: Callable) -> Callable:
+    """Decorator that logs the name of the function being executed"""
+    def wrapper(*args: Union[int, str], **kwargs: Union[int, str]):
+        logging.debug(_log(func.__name__))
+        return func(*args, **kwargs)
+    return wrapper
+
+
+async def handle_echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[Awaitable[None]]:
     """Handles incoming data and returns"""
+    dispatch = get_dispatch()
     while True:
         data = await reader.read(100)
-        message = data.decode()
-        addr = writer.get_extra_info('peername')
+        message = data.decode().rstrip(' \n')
+        address = writer.get_extra_info('peername')
+        logging.info(f"Received {message!r} from {address!r}")
 
-        print(f"Received {message!r} from {addr!r}")
+        func_name, *args = message.split(' ')
+        logging.debug(f"Received following function name and arguments: {func_name} and {args}")
 
-        # TODO implement function calls based on message
+        res_func = dispatch.get(func_name.lower())
+        try:
+            result = await res_func(*args)
+        except TypeError as t:
+            logging.exception(t)
+            if res_func is not None:
+                logging.error("User did not provide correct number of arguments")
+                result = "Incorrect number of arguments provided, please try again"
+            else:
+                logging.error("User requested unknown function")
+                result = f"Function '{func_name}' not available, provide 'list' to see which functions are available"
+        except ValueError as v:
+            logging.exception(v)
+            result = "Incorrect argument type(s) provided, please try again"
 
-        print(f"Send: {data!r}")
-        writer.write(data)
+        writer.write(f"{result}\n".encode('UTF-8'))
+        logging.info(f"Sent: {result!r}")
         await writer.drain()
-    else:
-        print("Close the connection")
-        writer.close()
 
 
-def set_(key: Union[int, str], val: Union[int, str]) -> str:
+@log_name
+async def set_(key: Union[int, str], val: Union[int, str]) -> str:
     """Will set a key-value pair in our database. If the key is already present the value will be overwritten. If the
     key is not present, the key-value pair will be inserted."""
-    logging.debug(_log(set_.__name__))
-    mem[key] = val
+    async with lock:
+        mem[key] = val
     return "OK"
 
 
-def get_(key: Union[int, str]) -> Union[int, str, None]:
-    """Will return the value paired up with the requested key. If the key does not exists, null is returned."""
-    logging.debug(_log(get_.__name__))
-    return mem.get(key)
+@log_name
+async def get_(key: Union[int, str]) -> Union[int, str, None]:
+    """Will return the value paired up with the requested key. If the key does not exists, null is returned"""
+    async with lock:
+        result = mem.get(key)
+    return result
 
 
+# @log_name
 async def mset_(*args: Union[int, str]) -> str:
     """Variations of get and set, where we work with a set of key-value pairs."""
-    logging.debug(_log(mset_.__name__))
     if len(args) % 2 != 0 or len(args) == 0:
-        logging.info("missing key/value pair")
+        logging.info("Missing key/value pair")
         return "ERROR"
     for key, val in zip(args[0::2], args[1::2]):
-        logging.debug(f"received: {{{key}: {val}}}")
+        logging.debug(f"Received the following: {{{key}: {val}}}")
         for i in range(0, NUM_TRIES):
             while True:
                 try:
-                    set_(key, val)
+                    await set_(key, val)
                 except Exception as e:
                     logging.error(e)
                 finally:
@@ -68,113 +92,123 @@ async def mset_(*args: Union[int, str]) -> str:
     return "OK"
 
 
+@log_name
 async def mget_(*args: Union[int, str]) -> List[Union[int, str]]:
     """Variations of get and set, where we work with a set of key-value pairs."""
-    logging.debug(_log(mget_.__name__))
     lst = list()
     for key in args:
         for i in range(0, NUM_TRIES):
-            while True:
-                try:
-                    lst.append(get_(key))
-                except Exception as e:
-                    logging.error(e)
-                finally:
-                    break
+            try:
+                lst.append(await get_(key))
+            except Exception as e:
+                logging.error(e)
+            finally:
+                break
     logging.debug(f"received: {lst}")
     return lst
 
 
+@log_name
 async def exists_(key: Union[int, str]) -> bool:
     """Boolean operator that checks if the key is in our database."""
-    logging.debug(_log(exists_.__name__))
-    return key in mem
+    async with lock:
+        result = key in mem
+    return result
 
 
+@log_name
 async def setnotexists_(key: Union[int, str], val: Union[int, str]) -> str:
     """Insert a key value pair only if the key is not already in our database."""
-    logging.debug(_log(setnotexists_.__name__))
     if not await exists_(key):
-        return set_(key, val)
+        return await set_(key, val)
     return "Key already exists"
 
 
+@log_name
 async def setexists_(key: Union[int, str], val: Union[int, str]) -> str:
     """Update a key value pair only if the key is already there."""
-    logging.debug(_log(setexists_.__name__))
     if await exists_(key):
-        return set_(key, val)
+        return await set_(key, val)
     return "Key does not exist"
 
 
+@log_name
 async def cset_(key: Union[int, str], old_val: Union[int, str], new_val: Union[int, str]) -> Union[int, str, None]:
-    """Set the new value only if the old one is equal with a given value."""
-    logging.debug(_log(cset_.__name__))
-    if get_(key) == old_val:
-        return set_(key, new_val)
-    return None
+    """Set the new value only if the old one is equal with a given value"""
+    if await get_(key) == old_val:
+        return await set_(key, new_val)
+    return "Key does not exist or value does not match, please try again"
 
 
-# inc, dec, incby, decby
+@log_name
 async def inc_(key: Union[int, str], n: int = 1) -> Union[str, None]:
     """This operations are defined only on integer values. When the query is executed, the database will need to
-    parse the string value into a integer, do the math operation and insert back the result as string. If the value
-    can not be parsed as integer, null is returned. If the operation is successful the old and new value is returned."""
-    val = get_(key)
+    parse the string value into a integer, do the math operation and insert back the result as string."""
+    val = await get_(key)
     try:
-        val += n
-        return set_(key, val)
+        val = int(val) + int(n)
+        return await set_(key, val)
     except TypeError as e:
         logging.exception(e)
-        return None
+        return "Key does not exist, please try again"
 
 
+@log_name
 async def dec_(key: Union[int, str], n: int = 1) -> Union[str, None]:
     """This operations are defined only on integer values. When the query is executed, the database will need to
-    parse the string value into a integer, do the math operation and insert back the result as string. If the value
-    can not be parsed as integer, null is returned. If the operation is successful the old and new value is returned."""
+    parse the string value into a integer, do the math operation and insert back the result as string."""
+    n = int(n)
     return await inc_(key, -n)
 
 
+@log_name
 async def incby_(key: Union[int, str], n: int) -> Union[str, None]:
     """This operations are defined only on integer values. When the query is executed, the database will need to
-    parse the string value into a integer, do the math operation and insert back the result as string. If the value
-    can not be parsed as integer, null is returned. If the operation is successful the old and new value is returned."""
+    parse the string value into a integer, do the math operation and insert back the result as string."""
     return await inc_(key, n)
 
 
+@log_name
 async def decby_(key: Union[int, str], n: int) -> Union[str, None]:
     """This operations are defined only on integer values. When the query is executed, the database will need to
-    parse the string value into a integer, do the math operation and insert back the result as string. If the value
-    can not be parsed as integer, null is returned. If the operation is successful the old and new value is returned."""
+    parse the string value into a integer, do the math operation and insert back the result as string."""
+    # try:
+    n = int(n)
+    # except (TypeError, ValueError) as e:
+    #     logging.exception(e)
+    #     # return 'ERROR'
     return await inc_(key, -n)
 
 
-async def main():
-    # commands such as below could be used for running above functions without a server
-    # logging.info(await set_('foo', 0))
-    # logging.info(await setnotexists_('fooz', 'bar'))
-    # logging.info(await setnotexists_('foo', 'bar'))
-    # logging.info(await setexists_('foo', 'bar'))
-    # await mset_('key1', 'val1', 'key2')
-    # await mset_('key1', 'val1', 'key2', 'val2')
-    # await mget_('key1', 'key2')
-    # logging.info(await exists_('nothing'))
-    # logging.info(await cset_('foo', 'bar', 'baz'))
-    # logging.info(await cset_('foo', 'bar', 'ba'))
-    # logging.info(await inc_('foo'))
-    # logging.info(await get_('foo'))
-    # logging.info(await dec_('foo'))
-    # logging.info(await get_('foo'))
-    # logging.info(await incby_('foo', 5))
-    # logging.info(await get_('foo'))
-    # logging.info(await decby_('foo', 3))
-    # logging.info(await get_('foo'))
+def get_dispatch():
+    return {
+        'set': set_,
+        'get': get_,
+        'mset': mset_,
+        'mget': mget_,
+        'exists': exists_,
+        'setexists': setexists_,
+        'setnotexists': setnotexists_,
+        'cset': cset_,
+        'inc': inc_,
+        'dec': dec_,
+        'incby': incby_,
+        'decby': decby_,
+        'list': _list,
+    }
 
+
+@log_name
+async def _list():
+    """Returns a list of available functions"""
+    return f"Available functions are: {list(get_dispatch().keys())}"
+
+
+async def main():
     server = await asyncio.start_server(handle_echo, host=HOST, port=PORT)
 
-    addr = server.sockets[0].getsockname()
-    print(f'Serving on {addr}')
+    address = server.sockets[0].getsockname()
+    logging.info(f'Serving on {address}')
 
     async with server:
         await server.serve_forever()
