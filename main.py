@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 from typing import Awaitable, Callable, Optional, List, Union
 
@@ -18,6 +19,7 @@ def _log(name: str) -> str:
 
 def log_name(func: Callable) -> Callable:
     """Decorator that logs the name of the function being executed"""
+    @functools.wraps(func)
     def wrapper(*args: Union[int, str], **kwargs: Union[int, str]):
         logging.debug(_log(func.__name__))
         return func(*args, **kwargs)
@@ -172,11 +174,7 @@ async def incby_(key: Union[int, str], n: int) -> Union[str, None]:
 async def decby_(key: Union[int, str], n: int) -> Union[str, None]:
     """This operations are defined only on integer values. When the query is executed, the database will need to
     parse the string value into a integer, do the math operation and insert back the result as string."""
-    # try:
     n = int(n)
-    # except (TypeError, ValueError) as e:
-    #     logging.exception(e)
-    #     # return 'ERROR'
     return await inc_(key, -n)
 
 
