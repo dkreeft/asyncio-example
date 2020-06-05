@@ -1,13 +1,20 @@
-# asyncio-example
+# Using `asyncio` and `threading` in Python 3
 
-Small example in-memory key-value store to demonstrate asyncio. It can be used as follows.
+Small example in-memory key-value store to demonstrate `asyncio` and `threading` in Python 3. The latter should be thread-safe and makes use of a global lock, and separate locks for every key/value pair. Both examples can be used as follows.
 
-First, start the server:
+First, start the respective server:
+
+* For `asyncio` use:
 ```bash
-python main.py
+python asyncio-example/main.py
 ```
 
-Second, make calls to the server in a separate terminal window (by, for example, using netcat):
+* For `threading` use:
+```bash
+python threading-example/main.py
+```
+
+Second, make calls to the server in one or multiple separate terminal windows (by, for example, using netcat):
 ```bash
 nc 127.0.0.1 4040
 ```
@@ -31,3 +38,7 @@ You can send the following messages/operations to the server:
 Operation names are case-insensitive.
 
 Close the server anytime by using `CTRL + C`.
+
+## To do
+* Split `main.py` into modules that could be used by both examples
+* Split the `handle` functions into smaller functions
