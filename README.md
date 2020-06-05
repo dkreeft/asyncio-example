@@ -1,6 +1,6 @@
-# Two examples of a in-memory key-value store
+# Two examples of an in-memory key-value store
 
-Two version of an in-memory key-value store. Both were designed to demonstrate `asyncio` and `threading` in Python 3. The latter should be thread-safe and makes use of a global lock, and separate locks for every key/value pair. Both examples can be used as follows.
+Two examples of an in-memory key-value store. Both were designed to demonstrate `asyncio` and `threading` in Python 3. The latter should be thread-safe and makes use of a global lock, and separate locks for every key/value pair. Both examples can be used as follows.
 
 First, start the respective server:
 
